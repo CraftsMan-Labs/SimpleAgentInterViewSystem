@@ -1,4 +1,7 @@
-.PHONY: up down logs ps restart
+.PHONY: setup up down logs ps restart
+
+setup:
+	uv venv && . .venv/bin/activate && uv sync
 
 up:
 	docker compose up -d --build

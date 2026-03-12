@@ -26,25 +26,30 @@ It includes:
 
 ```bash
 cd /home/rishub/Desktop/projects/rishub/SimpleFlowTestTempaltes/SimpleAgentInterViewSystem
-python -m venv .venv
+uv venv
 source .venv/bin/activate
-pip install -e /home/rishub/Desktop/projects/rishub/SimpleAgents/crates/simple-agents-py
-pip install -e .
+uv sync
 cp .env.example .env
 ```
+
+This installs dependencies from PyPI, including:
+
+- `simple-agents-py`: https://pypi.org/project/simple-agents-py/
+- `simpleflow-sdk`: https://pypi.org/project/simpleflow-sdk/
 
 Then fill `.env`:
 
 - Required for workflow execution: `WORKFLOW_API_BASE`, `WORKFLOW_API_KEY`, `WORKFLOW_MODEL`.
 - Optional for control-plane mode: `SIMPLEFLOW_API_BASE_URL` plus machine creds (`SIMPLEFLOW_CLIENT_ID`, `SIMPLEFLOW_CLIENT_SECRET`) or `SIMPLEFLOW_API_TOKEN`.
 - Add `SIMPLEFLOW_AGENT_CATALOG_JSON` so UI onboarding knows which agent/runtime mapping to use.
+- If an agent has no `runtime_endpoint_url`, onboarding auto-generates it from `RUNTIME_PUBLIC_BASE_URL` (preferred) or the current request host.
 
 ## Run
 
 CLI mode:
 
 ```bash
-python scripts/chat_agent.py --workflow workflows/python-intern-fun-interview-chat.yaml
+uv run python scripts/chat_agent.py --workflow workflows/python-intern-fun-interview-chat.yaml
 ```
 
 Type `exit` to quit.
@@ -52,7 +57,7 @@ Type `exit` to quit.
 Web mode:
 
 ```bash
-uvicorn app:app --host 0.0.0.0 --port 8091 --reload
+uv run uvicorn app:app --host 0.0.0.0 --port 8091 --reload
 ```
 
 Open `http://localhost:8091`.
@@ -73,6 +78,7 @@ Other useful commands:
 
 - `make logs` - follow container logs.
 - `make ps` - show container status.
+- If `.env` uses `SIMPLEFLOW_API_BASE_URL=http://localhost:...`, Docker mode automatically rewrites it to `host.docker.internal` inside the container.
 
 ## Control-plane endpoints
 

@@ -6,6 +6,8 @@ const state = {
   me: null,
   agentCatalog: [],
   onboarding: null,
+  onboardingInFlight: false,
+  lastAutoOnboardedKey: "",
 };
 
 const messagesEl = document.getElementById("messages");
@@ -80,6 +82,15 @@ function selectedAgent() {
     return null;
   }
   return state.agentCatalog[idx];
+}
+
+function agentKey(agent) {
+  if (agent == null || typeof agent !== "object") {
+    return "";
+  }
+  const agentId = String(agent.agent_id || "").trim();
+  const agentVersion = String(agent.agent_version || "v1").trim();
+  return `${agentId}::${agentVersion}`;
 }
 
 function renderAgentCatalog() {
@@ -159,11 +170,13 @@ async function loadProfileAndCatalog() {
       ? agentsPayload.agents
       : [];
     renderAgentCatalog();
+    state.lastAutoOnboardedKey = "";
 
     const userId = String(state.me.user_id || state.me.id || "").trim();
     setControlPlaneStatus(
       `Signed in${userId ? ` as ${userId}` : ""}. ${state.agentCatalog.length} agent(s) loaded.`
     );
+    await autoOnboardSelectedAgent("catalog load");
   } catch (error) {
     state.me = null;
     state.agentCatalog = [];
@@ -219,6 +232,8 @@ async function signOut() {
     state.token = "";
     state.me = null;
     state.agentCatalog = [];
+    state.lastAutoOnboardedKey = "";
+    state.onboardingInFlight = false;
     localStorage.removeItem(TOKEN_KEY);
     renderAgentCatalog();
     setControlPlaneStatus("Signed out. Local workflow mode still available.");
@@ -226,18 +241,44 @@ async function signOut() {
   }
 }
 
-async function onboardSelectedAgent() {
-  const agent = selectedAgent();
+async function onboardAgent(agent, options = {}) {
+  const quiet = options.quiet === true;
+  const markAuto = options.markAuto === true;
+
   if (agent == null) {
-    addBubble("system", "No selectable agent for onboarding.");
+    if (!quiet) {
+      addBubble("system", "No selectable agent for onboarding.");
+    }
     return;
   }
   if (state.token === "") {
-    addBubble("system", "Sign in first to run onboarding.");
+    if (!quiet) {
+      addBubble("system", "Sign in first to run onboarding.");
+    }
     return;
   }
 
-  setBusy(true);
+  const key = agentKey(agent);
+  if (key === "") {
+    if (!quiet) {
+      addBubble("system", "Agent metadata is invalid for onboarding.");
+    }
+    return;
+  }
+
+  if (state.onboardingInFlight) {
+    return;
+  }
+
+  state.onboardingInFlight = true;
+  if (!quiet) {
+    setBusy(true);
+  } else {
+    onboardBtnEl.disabled = true;
+  }
+
+  setOnboardingStatus("Onboarding in progress...");
+
   try {
     const response = await fetch("/api/onboarding/start", {
       method: "POST",
@@ -260,13 +301,51 @@ async function onboardSelectedAgent() {
         ? `Onboarding ${status}. Registration: ${registrationId}`
         : `Onboarding ${status}.`
     );
-    addBubble("system", `Onboarding finished with status: ${status}`);
+
+    if (markAuto) {
+      state.lastAutoOnboardedKey = key;
+    }
+
+    if (!quiet) {
+      addBubble("system", `Onboarding finished with status: ${status}`);
+    }
   } catch (error) {
-    addBubble("system", `Onboarding error: ${String(error.message || error)}`);
-    setOnboardingStatus(`Onboarding error: ${String(error.message || error)}`);
+    const message = String(error.message || error);
+    if (message.includes("agent catalog entry not found")) {
+      await loadProfileAndCatalog();
+    }
+    if (!quiet) {
+      addBubble("system", `Onboarding error: ${message}`);
+    }
+    setOnboardingStatus(`Onboarding error: ${message}`);
   } finally {
-    setBusy(false);
+    state.onboardingInFlight = false;
+    if (!quiet) {
+      setBusy(false);
+    } else {
+      onboardBtnEl.disabled = false;
+    }
   }
+}
+
+async function onboardSelectedAgent(options = {}) {
+  const agent = selectedAgent();
+  await onboardAgent(agent, options);
+}
+
+async function autoOnboardSelectedAgent(reason = "selection") {
+  const agent = selectedAgent();
+  if (agent == null || state.token === "") {
+    return;
+  }
+
+  const key = agentKey(agent);
+  if (key === "" || key === state.lastAutoOnboardedKey) {
+    return;
+  }
+
+  setOnboardingStatus(`Auto onboarding started (${reason})...`);
+  await onboardAgent(agent, { quiet: true, markAuto: true });
 }
 
 async function createSession() {
@@ -318,6 +397,8 @@ async function sendMessage(text) {
       if (agent == null) {
         throw new Error("Select an agent before control-plane invoke.");
       }
+
+      await autoOnboardSelectedAgent("invoke preflight");
 
       const meUserId = String(
         (state.me && (state.me.user_id || state.me.id)) || ""
@@ -409,6 +490,23 @@ refreshAgentsBtnEl.addEventListener("click", async () => {
     return;
   }
   await loadProfileAndCatalog();
+});
+
+agentSelectEl.addEventListener("change", async () => {
+  if (state.busy) {
+    return;
+  }
+  await autoOnboardSelectedAgent("agent selection");
+});
+
+modeSelectEl.addEventListener("change", async () => {
+  if (state.busy) {
+    return;
+  }
+  if (modeSelectEl.value !== "control-plane") {
+    return;
+  }
+  await autoOnboardSelectedAgent("control-plane mode");
 });
 
 onboardBtnEl.addEventListener("click", async () => {

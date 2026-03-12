@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
-import uuid
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -15,12 +17,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from simple_agents_py import Client
+from simpleflow_sdk import ChatMessageWrite, SimpleFlowClient
 
-try:
-    from simpleflow_sdk import RuntimeRegistration, SimpleFlowClient
-except Exception:  # noqa: BLE001
-    RuntimeRegistration = None  # type: ignore[assignment]
-    SimpleFlowClient = None  # type: ignore[assignment]
+
+logger = logging.getLogger("simpleagent-interview-system")
 
 
 @dataclass
@@ -87,7 +87,8 @@ def _load_workflow_config() -> tuple[str, str, str, str, str]:
     load_dotenv()
 
     provider = os.getenv("WORKFLOW_PROVIDER", "openai").strip()
-    api_base = os.getenv("WORKFLOW_API_BASE", "").strip()
+    configured_api_base = os.getenv("WORKFLOW_API_BASE", "").strip()
+    api_base = _normalize_localhost_url_for_container(configured_api_base)
     api_key = os.getenv("WORKFLOW_API_KEY", "").strip()
     model = os.getenv("WORKFLOW_MODEL", "").strip()
     workflow_path = os.getenv(
@@ -103,13 +104,36 @@ def _load_workflow_config() -> tuple[str, str, str, str, str]:
 
 
 def _load_control_plane_config() -> dict[str, str]:
+    configured_base_url = os.getenv("SIMPLEFLOW_API_BASE_URL", "").strip()
+    effective_base_url = _normalize_localhost_url_for_container(configured_base_url)
     return {
-        "base_url": os.getenv("SIMPLEFLOW_API_BASE_URL", "").strip(),
+        "base_url": effective_base_url,
+        "configured_base_url": configured_base_url,
         "api_token": os.getenv("SIMPLEFLOW_API_TOKEN", "").strip(),
         "client_id": os.getenv("SIMPLEFLOW_CLIENT_ID", "").strip(),
         "client_secret": os.getenv("SIMPLEFLOW_CLIENT_SECRET", "").strip(),
-        "machine_auth_token": os.getenv("SIMPLEFLOW_MACHINE_AUTH_TOKEN", "").strip(),
     }
+
+
+def _running_in_container() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _normalize_localhost_url_for_container(raw_url: str) -> str:
+    if raw_url == "":
+        return ""
+
+    parsed = urlparse(raw_url)
+    host = parsed.hostname
+    if _running_in_container() and host in {"localhost", "127.0.0.1"}:
+        port = parsed.port
+        netloc = "host.docker.internal"
+        if port is not None:
+            netloc = f"{netloc}:{port}"
+        parsed = parsed._replace(netloc=netloc)
+        return urlunparse(parsed)
+
+    return raw_url
 
 
 def _resolve_workflow_path(raw_path: str) -> Path:
@@ -288,6 +312,40 @@ def _normalize_control_plane_me(payload: Any) -> dict[str, Any]:
     return normalized
 
 
+def _request_base_url(request: Request) -> str:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").strip()
+    forwarded_host = request.headers.get("x-forwarded-host", "").strip()
+    if forwarded_proto != "" and forwarded_host != "":
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+    parsed = request.url
+    scheme = parsed.scheme.strip()
+    netloc = parsed.netloc.strip()
+    if scheme != "" and netloc != "":
+        return f"{scheme}://{netloc}".rstrip("/")
+    return ""
+
+
+def _ensure_agent_runtime_endpoint(
+    request: Request, agent: AgentCatalogEntry
+) -> AgentCatalogEntry:
+    existing = agent.runtime_endpoint_url.strip()
+    if existing != "":
+        return agent
+
+    configured_public_base = (
+        os.getenv("RUNTIME_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    )
+    if configured_public_base != "":
+        return replace(agent, runtime_endpoint_url=configured_public_base)
+
+    inferred_base = _request_base_url(request)
+    if inferred_base != "":
+        return replace(agent, runtime_endpoint_url=inferred_base)
+
+    return agent
+
+
 def _sdk_error_to_http_exception(exc: Exception) -> HTTPException:
     text = str(exc)
     if "status=401" in text:
@@ -310,6 +368,129 @@ def _ensure_simpleflow_client() -> Any:
             detail="control-plane client unavailable; set SIMPLEFLOW_API_BASE_URL and install simpleflow-sdk",
         )
     return simpleflow_client
+
+
+def _runtime_write_client() -> Any:
+    if runtime_write_client is not None:
+        return runtime_write_client
+    return simpleflow_client
+
+
+def _default_telemetry_agent() -> AgentCatalogEntry | None:
+    enabled_entries = [
+        entry for entry in agent_catalog.values() if entry.enabled is True
+    ]
+    if len(enabled_entries) == 0:
+        return None
+    enabled_entries.sort(key=lambda item: (item.agent_id, item.agent_version))
+    return enabled_entries[0]
+
+
+def _emit_runtime_telemetry_for_chat(
+    *,
+    session_id: str,
+    user_message: str,
+    assistant_reply: str,
+    workflow_result: Any,
+) -> None:
+    if not isinstance(workflow_result, dict):
+        return
+    write_client = _runtime_write_client()
+    if write_client is None:
+        return
+
+    agent = _default_telemetry_agent()
+    if agent is None:
+        return
+
+    run_id = str(workflow_result.get("run_id", "")).strip()
+    if run_id == "":
+        run_id = session_id
+
+    event_counts: dict[str, int] = {}
+    events = workflow_result.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("event_type", "")).strip()
+            if event_type == "":
+                continue
+            prior = event_counts.get(event_type, 0)
+            event_counts[event_type] = prior + 1
+
+    message_id = f"assistant-{uuid.uuid4().hex}"
+    chat_idempotency_key = f"runtime-chat-{message_id}"
+
+    try:
+        write_client.write_event_from_workflow_result(
+            agent_id=agent.agent_id,
+            workflow_result=workflow_result,
+            event_type="runtime.invoke.completed",
+            organization_id=agent.org_id,
+            user_id=session_id,
+            include_raw=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("runtime telemetry event write failed: %s", exc)
+
+    try:
+        write_client.write_chat_message(
+            ChatMessageWrite(
+                agent_id=agent.agent_id,
+                organization_id=agent.org_id,
+                run_id=run_id,
+                role="user",
+                direction="inbound",
+                chat_id=session_id,
+                message_id=f"user-{uuid.uuid4().hex}",
+                content={"text": user_message},
+                metadata={
+                    "source": "local-workflow",
+                    "event_counts": event_counts,
+                },
+            )
+        )
+
+        write_from_workflow = getattr(
+            write_client, "write_chat_message_from_workflow_result", None
+        )
+        if callable(write_from_workflow):
+            write_from_workflow(
+                agent_id=agent.agent_id,
+                organization_id=agent.org_id,
+                run_id=run_id,
+                role="assistant",
+                workflow_result=workflow_result,
+                trace_id="",
+                span_id=run_id,
+                tenant_id=agent.org_id,
+                chat_id=session_id,
+                message_id=message_id,
+                direction="outbound",
+                created_at_ms=int(time.time() * 1000),
+                idempotency_key=chat_idempotency_key,
+            )
+        else:
+            write_client.write_chat_message(
+                ChatMessageWrite(
+                    agent_id=agent.agent_id,
+                    organization_id=agent.org_id,
+                    run_id=run_id,
+                    role="assistant",
+                    direction="outbound",
+                    chat_id=session_id,
+                    message_id=message_id,
+                    content={"text": assistant_reply},
+                    metadata={
+                        "source": "local-workflow",
+                        "event_counts": event_counts,
+                    },
+                    idempotency_key=chat_idempotency_key,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("runtime chat message write failed: %s", exc)
 
 
 def _require_operator_session(request: Request) -> str:
@@ -340,7 +521,30 @@ def _resolve_agent_or_404(
     lookup_key = _agent_key(normalized_agent_id, normalized_agent_version)
     entry = agent_catalog.get(lookup_key)
     if entry is None:
-        raise HTTPException(status_code=404, detail="agent catalog entry not found")
+        for candidate in agent_catalog.values():
+            if candidate.agent_id == normalized_agent_id:
+                entry = candidate
+                break
+
+    if entry is None:
+        enabled_entries = [
+            candidate for candidate in agent_catalog.values() if candidate.enabled
+        ]
+        if len(enabled_entries) == 1:
+            entry = enabled_entries[0]
+
+    if entry is None:
+        available_ids = sorted(
+            {candidate.agent_id for candidate in agent_catalog.values()}
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "agent catalog entry not found"
+                if len(available_ids) == 0
+                else f"agent catalog entry not found; available agent_id values: {', '.join(available_ids)}"
+            ),
+        )
     if entry.enabled is False:
         raise HTTPException(status_code=409, detail="agent catalog entry is disabled")
     return entry
@@ -452,17 +656,20 @@ def _extract_registration_id(payload: Any) -> str:
     return ""
 
 
-def _machine_auth_override() -> str | None:
-    token = control_plane_config["machine_auth_token"]
-    if token != "":
-        return token
-    return None
-
-
-def _run_onboarding_lifecycle(record: OnboardingRecord) -> None:
+def _run_onboarding_lifecycle(
+    record: OnboardingRecord, operator_auth_token: str
+) -> None:
     client_ref = _ensure_simpleflow_client()
-    machine_auth = _machine_auth_override()
     ordered_steps = ["create", "validate", "activate"]
+
+    endpoint_url = record.agent.runtime_endpoint_url.strip()
+    if endpoint_url == "":
+        _set_step_failed(
+            record,
+            "create",
+            "runtime_endpoint_url is required for runtime registration",
+        )
+        return
 
     for step_name in ordered_steps:
         step = record.steps[step_name]
@@ -472,22 +679,20 @@ def _run_onboarding_lifecycle(record: OnboardingRecord) -> None:
         _set_step_running(record, step_name)
         try:
             if step_name == "create":
-                if RuntimeRegistration is None:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="simpleflow-sdk RuntimeRegistration unavailable",
-                    )
-                registration_payload = RuntimeRegistration(
-                    agent_id=record.agent.agent_id,
-                    agent_version=record.agent.agent_version,
-                    execution_mode="remote_runtime",
-                    endpoint_url=record.agent.runtime_endpoint_url or None,
-                    auth_mode="jwt",
-                    capabilities=["chat"],
-                    runtime_id=record.agent.runtime_id or None,
-                )
+                registration_payload: dict[str, Any] = {
+                    "agent_id": record.agent.agent_id,
+                    "agent_version": record.agent.agent_version,
+                    "execution_mode": "remote_runtime",
+                    "endpoint_url": endpoint_url,
+                    "auth_mode": "jwt",
+                    "capabilities": ["chat"],
+                }
+                runtime_id = record.agent.runtime_id.strip()
+                if runtime_id != "":
+                    registration_payload["runtime_id"] = runtime_id
                 created = client_ref.register_runtime(
-                    registration_payload, auth_token=machine_auth
+                    registration_payload,
+                    auth_token=operator_auth_token,
                 )
                 registration_id = _extract_registration_id(created)
                 if registration_id != "":
@@ -499,7 +704,8 @@ def _run_onboarding_lifecycle(record: OnboardingRecord) -> None:
                         detail="registration id is required before validation",
                     )
                 client_ref.validate_runtime_registration(
-                    record.registration_id, auth_token=machine_auth
+                    record.registration_id,
+                    auth_token=operator_auth_token,
                 )
             else:
                 if record.registration_id == "":
@@ -508,7 +714,8 @@ def _run_onboarding_lifecycle(record: OnboardingRecord) -> None:
                         detail="registration id is required before activation",
                     )
                 client_ref.activate_runtime_registration(
-                    record.registration_id, auth_token=machine_auth
+                    record.registration_id,
+                    auth_token=operator_auth_token,
                 )
             _set_step_success(record, step_name)
         except HTTPException as exc:
@@ -556,6 +763,21 @@ if SimpleFlowClient is not None and control_plane_config["base_url"] != "":
 else:
     simpleflow_client = None
 
+if (
+    SimpleFlowClient is not None
+    and control_plane_config["base_url"] != ""
+    and control_plane_config["client_id"] != ""
+    and control_plane_config["client_secret"] != ""
+):
+    runtime_write_client: Any = SimpleFlowClient(
+        control_plane_config["base_url"],
+        api_token=None,
+        oauth_client_id=control_plane_config["client_id"],
+        oauth_client_secret=control_plane_config["client_secret"],
+    )
+else:
+    runtime_write_client = None
+
 agent_catalog = _load_agent_catalog()
 
 app = FastAPI(title="SimpleAgentInterViewSystem")
@@ -582,9 +804,11 @@ def control_plane_health() -> dict[str, Any]:
     return {
         "configured": configured,
         "base_url": control_plane_config["base_url"],
+        "configured_base_url": control_plane_config["configured_base_url"],
         "has_machine_credentials": control_plane_config["client_id"] != ""
         and control_plane_config["client_secret"] != "",
-        "has_machine_bearer": control_plane_config["machine_auth_token"] != "",
+        "has_runtime_write_client": runtime_write_client is not None,
+        "workflow_api_base": api_base,
         "catalog_size": len(agent_catalog),
     }
 
@@ -637,7 +861,9 @@ def available_agents(request: Request) -> dict[str, Any]:
             "agent_id": entry.agent_id,
             "agent_version": entry.agent_version,
             "org_id": entry.org_id,
-            "runtime_endpoint_url": entry.runtime_endpoint_url,
+            "runtime_endpoint_url": _ensure_agent_runtime_endpoint(
+                request, entry
+            ).runtime_endpoint_url,
             "runtime_id": entry.runtime_id,
             "enabled": entry.enabled,
         }
@@ -652,8 +878,9 @@ def available_agents(request: Request) -> dict[str, Any]:
 def onboarding_start(
     payload: OnboardingStartRequest, request: Request
 ) -> dict[str, Any]:
-    _require_operator_session(request)
+    operator_token = _require_operator_session(request)
     agent = _resolve_agent_or_404(payload.agent_id, payload.agent_version)
+    agent = _ensure_agent_runtime_endpoint(request, agent)
     key = _agent_key(agent.agent_id, agent.agent_version)
 
     with onboarding_lock:
@@ -663,7 +890,7 @@ def onboarding_start(
             onboarding_state_by_agent[key] = existing
             onboarding_state_by_id[existing.onboarding_id] = existing
 
-        _run_onboarding_lifecycle(existing)
+        _run_onboarding_lifecycle(existing, operator_token)
         return _serialize_onboarding(existing)
 
 
@@ -706,8 +933,9 @@ def onboarding_status(
 def onboarding_retry(
     payload: OnboardingRetryRequest, request: Request
 ) -> dict[str, Any]:
-    _require_operator_session(request)
+    operator_token = _require_operator_session(request)
     agent = _resolve_agent_or_404(payload.agent_id, payload.agent_version)
+    agent = _ensure_agent_runtime_endpoint(request, agent)
     key = _agent_key(agent.agent_id, agent.agent_version)
 
     with onboarding_lock:
@@ -726,7 +954,7 @@ def onboarding_retry(
                 failed_step = "activate"
 
         _reset_steps_for_retry(existing, failed_step)
-        _run_onboarding_lifecycle(existing)
+        _run_onboarding_lifecycle(existing, operator_token)
         return _serialize_onboarding(existing)
 
 
@@ -912,12 +1140,14 @@ def chat(payload: ChatRequest) -> dict[str, Any]:
     workflow_options: dict[str, Any] = {}
     if default_model != "":
         workflow_options["model"] = default_model
+    workflow_options["trace"] = {"tenant": {"run_id": session_id}}
+    workflow_options["telemetry"] = {"nerdstats": True}
 
     try:
         result = client.run_workflow_yaml(
             str(workflow_path),
             workflow_input,
-            include_events=False,
+            include_events=True,
             workflow_options=workflow_options,
         )
     except Exception as exc:  # noqa: BLE001
@@ -938,6 +1168,13 @@ def chat(payload: ChatRequest) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="session not found")
         session.messages.append({"role": "assistant", "content": assistant_reply})
         session.closed = closed
+
+    _emit_runtime_telemetry_for_chat(
+        session_id=session_id,
+        user_message=user_message,
+        assistant_reply=assistant_reply,
+        workflow_result=result,
+    )
 
     return {
         "session_id": session_id,
