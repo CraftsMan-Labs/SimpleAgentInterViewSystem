@@ -1,0 +1,259 @@
+:root {
+  --bg-1: #f6f3ea;
+  --bg-2: #e8f0ef;
+  --ink: #22201d;
+  --muted: #6f6860;
+  --card: #fffdf8;
+  --line: #d7cfc2;
+  --accent: #1d6b61;
+  --accent-strong: #115148;
+  --bubble-user: #efe7d5;
+  --bubble-assistant: #dff1ea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--ink);
+  min-height: 100vh;
+  background: radial-gradient(circle at 10% 10%, #fffaf1 0%, transparent 40%),
+    radial-gradient(circle at 90% 30%, #e2efe8 0%, transparent 45%),
+    linear-gradient(130deg, var(--bg-1), var(--bg-2));
+}
+
+.app-shell {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 28px 16px 40px;
+  display: grid;
+  gap: 16px;
+}
+
+.hero {
+  background: color-mix(in srgb, var(--card) 85%, white 15%);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.hero h1 {
+  margin: 8px 0;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+}
+
+.hero p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.control-card,
+.chat-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+#cp-status,
+.subtle-text {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.signin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.signin-grid label,
+.selector-row label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.signin-grid input,
+.selector-row select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+}
+
+#signin-btn {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#signin-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-row,
+.selector-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.selector-row label {
+  min-width: 240px;
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.chat-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+#session-meta {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ghost-btn,
+#send-btn {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ghost-btn {
+  background: transparent;
+  color: var(--accent-strong);
+  border: 1px solid var(--line);
+}
+
+#send-btn {
+  background: var(--accent);
+  color: white;
+}
+
+#send-btn:disabled,
+.ghost-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.messages {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 12px;
+  min-height: 320px;
+  max-height: 54vh;
+  overflow-y: auto;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.bubble {
+  max-width: min(82%, 740px);
+  border-radius: 14px;
+  padding: 10px 12px;
+  line-height: 1.45;
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+}
+
+.bubble.user {
+  margin-left: auto;
+  background: var(--bubble-user);
+}
+
+.bubble.assistant {
+  margin-right: auto;
+  background: var(--bubble-assistant);
+}
+
+.bubble.system {
+  margin: 0 auto;
+  background: #f4f4f4;
+  color: #444;
+  font-size: 0.88rem;
+}
+
+.composer {
+  display: grid;
+  gap: 8px;
+}
+
+#message-input {
+  width: 100%;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  border: 0;
+  padding: 0;
+  clip: rect(0, 0, 0, 0);
+  overflow: hidden;
+}
+
+@media (max-width: 680px) {
+  .signin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .bubble {
+    max-width: 100%;
+  }
+}

@@ -1,0 +1,11 @@
+services:
+  simpleagent-interview-system:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: simpleagent-interview-system
+    env_file:
+      - .env
+    ports:
+      - "8091:8091"
+    restart: unless-stopped

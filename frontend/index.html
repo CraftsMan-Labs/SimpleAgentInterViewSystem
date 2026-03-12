@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SimpleAgentInterViewSystem</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">SaaS Interview Workspace</p>
+        <h1>SimpleAgentInterViewSystem</h1>
+        <p>
+          Workflow-driven interview chat with optional SimpleFlow control-plane connection.
+          Sign in, onboard runtime registration, and run guided candidate evaluation.
+        </p>
+      </section>
+
+      <section class="control-card">
+        <header class="panel-header">
+          <h2>Control Plane</h2>
+          <p id="cp-status">Checking configuration...</p>
+        </header>
+
+        <form id="signin-form" class="signin-grid">
+          <label>
+            <span>Email</span>
+            <input id="email-input" type="email" placeholder="you@company.com" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input id="password-input" type="password" placeholder="Your password" required />
+          </label>
+          <button id="signin-btn" type="submit">Sign In</button>
+        </form>
+
+        <div class="toolbar-row">
+          <button id="refresh-agents-btn" class="ghost-btn" type="button">Refresh Agents</button>
+          <button id="onboard-btn" class="ghost-btn" type="button">Onboard Selected Agent</button>
+          <button id="signout-btn" class="ghost-btn" type="button">Sign Out</button>
+        </div>
+
+        <div class="selector-row">
+          <label>
+            <span>Agent</span>
+            <select id="agent-select"></select>
+          </label>
+          <label>
+            <span>Chat Mode</span>
+            <select id="mode-select">
+              <option value="workflow">Local Workflow Engine</option>
+              <option value="control-plane">Control Plane Invoke</option>
+            </select>
+          </label>
+        </div>
+
+        <p id="onboarding-status" class="subtle-text">Onboarding not started.</p>
+      </section>
+
+      <section class="chat-card">
+        <header class="chat-header">
+          <div>
+            <h2>Interview Session</h2>
+            <p id="session-meta">No session yet</p>
+          </div>
+          <button id="new-session-btn" class="ghost-btn" type="button">New Session</button>
+        </header>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="message-input">Message</label>
+          <textarea
+            id="message-input"
+            name="message"
+            rows="3"
+            placeholder="Type candidate response or interviewer prompt"
+            required
+          ></textarea>
+          <button id="send-btn" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
